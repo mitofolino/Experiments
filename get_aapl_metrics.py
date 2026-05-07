@@ -2,15 +2,86 @@
 """
 get_aapl_metrics.py
 
-Fetches AAPL fundamentals (Yahoo via yfinance + quoteSummary fallback) and computes derived metrics:
-- Market Cap, P/E, PEG, EV/EBITDA
-- Price / Free Cash Flow
-- Return on Equity (ROE), ROIC (fallback)
-- Operating & Net Profit Margins
-- Debt/Equity, Net Debt/EBITDA
-- Current & Quick Ratios
-- Revenue CAGR (5yr)
-- Dividend Yield, Total Shareholder Yield, Payout Ratio
+Fetches AAPL fundamentals (Yahoo via yfinance + quoteSummary fallback) and computes derived metrics.
+
+Metrics (what they mean and how they're calculated):
+
+- marketCap
+  Purpose: Size of the company; used for valuation comparisons.
+  Source/Calc: Taken directly from Yahoo ('marketCap') = share price * shares outstanding.
+
+- trailingPE (P/E)
+  Purpose: Valuation multiple showing price paid per dollar of trailing earnings.
+  Source/Calc: Yahoo 'trailingPE' (Price / EPS (TTM)).
+
+- pegRatio
+  Purpose: Adjusts P/E for expected earnings growth (lower may indicate better value).
+  Source/Calc: Yahoo 'pegRatio' (P/E divided by expected growth rate).
+
+- ev_to_ebitda (EV/EBITDA)
+  Purpose: Enterprise-value based multiple that accounts for capital structure.
+  Source/Calc: Yahoo 'enterpriseToEbitda'. EV/EBITDA = (Enterprise Value) / EBITDA.
+
+- price_to_free_cash_flow (Price/FCF)
+  Purpose: Valuation relative to cash generation; alternative to P/E.
+  Source/Calc: marketCap / freeCashflow (both from Yahoo when available).
+
+- dividendYield
+  Purpose: Cash yield to shareholders from dividends.
+  Source/Calc: Yahoo 'dividendYield' (annual dividend / current price).
+
+- buyback_yield
+  Purpose: Returns to shareholders via share repurchases.
+  Source/Calc: -(Repurchase Of Capital Stock) / marketCap (repurchases typically negative cash outflow).
+
+- total_shareholder_yield
+  Purpose: Combined cash yield (dividend + buybacks) to shareholders.
+  Source/Calc: dividendYield + buyback_yield (when available).
+
+- payout_ratio
+  Purpose: Share of earnings paid as dividends; shows sustainability of dividend.
+  Source/Calc: Yahoo 'payoutRatio' or dividendRate / trailingEps when payoutRatio missing.
+
+- roe (Return on Equity)
+  Purpose: Profitability relative to shareholders' equity.
+  Source/Calc: Yahoo 'returnOnEquity' (Net Income / Shareholders' Equity).
+
+- roic (Return on Invested Capital)
+  Purpose: How efficiently a company turns capital into profits.
+  Source/Calc: Prefer 'returnOnInvestment' or 'returnOnInvestedCapital' from Yahoo; fallback to 'returnOnAssets' if missing.
+
+- operating_margin
+  Purpose: Operating efficiency (operating income as % of revenue).
+  Source/Calc: Yahoo 'operatingMargins' (Operating Income / Revenue).
+
+- net_profit_margin
+  Purpose: Net profitability (net income as % of revenue).
+  Source/Calc: Yahoo 'profitMargins' (Net Income / Revenue).
+
+- debt_to_equity
+  Purpose: Capital structure/leverage measure.
+  Source/Calc: Yahoo 'debtToEquity' = Total Debt / Shareholders' Equity.
+
+- net_debt_to_ebitda
+  Purpose: Leverage adjusted for cash; shows how many years of EBITDA needed to pay net debt.
+  Source/Calc: (Total Debt - Total Cash) / EBITDA (using Yahoo fields).
+
+- current_ratio
+  Purpose: Short-term liquidity (ability to cover current liabilities).
+  Source/Calc: Yahoo 'currentRatio' = Current Assets / Current Liabilities.
+
+- quick_ratio
+  Purpose: Liquidity minus inventory; stricter short-term liquidity.
+  Source/Calc: Yahoo 'quickRatio' (or (Current Assets - Inventory) / Current Liabilities).
+
+- revenue_cagr_5yr
+  Purpose: Growth rate of revenue over 5 years.
+  Source/Calc: Calculated from annual income statements: CAGR = (rev_end / rev_start)^(1/years) - 1.
+
+Notes:
+- All fields try to use Yahoo-provided keys first (t.info), with fallbacks to parsed financial statements when necessary.
+- Repurchases are read from cashflow statements and treated as negative outflows; buyback yield is expressed as a positive fraction of market cap.
+- Some metrics may be null when source data is missing; check JSON output for nulls.
 
 Writes JSON to metrics_aapl.json and prints it.
 
@@ -65,7 +136,7 @@ def df_to_revs(ann: pd.DataFrame) -> list:
 
 
 def compute_metrics(ticker: str = 'AAPL') -> Dict[str, Any]:
-    t = yf.Ticker(ticker)
+    tyes = yf.Ticker(ticker)
     info = {}
     try:
         info = t.info if hasattr(t, 'info') else t.get_info()
