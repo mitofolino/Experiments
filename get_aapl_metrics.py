@@ -136,22 +136,49 @@ def df_to_revs(ann: pd.DataFrame) -> list:
 
 
 def compute_metrics(ticker: str = 'AAPL') -> Dict[str, Any]:
-    tyes = yf.Ticker(ticker)
+    """Compute metrics for `ticker` with robust fallbacks.
+
+    Strategy:
+    - Prefer yfinance t.get_info() (or t.info).
+    - If that yields few fields, attempt Yahoo quoteSummary JSON as a fallback.
+    - Always parse financial statements from yfinance for repurchases and revenue history.
+    - Return a metrics dict and include a "_source" key showing which source was used.
+    """
+    t = yf.Ticker(ticker)
     info = {}
+    source = "none"
+
+    # 1) Try yfinance high-level info
     try:
-        info = t.info if hasattr(t, 'info') else t.get_info()
+        if hasattr(t, "get_info"):
+            info = t.get_info() or {}
+        else:
+            info = getattr(t, "info", {}) or {}
+        if info:
+            source = "yfinance"
     except Exception:
         info = {}
 
-    # basic numeric helpers
-    market_cap = safe_num(info.get('marketCap'))
-    trailing_pe = safe_num(info.get('trailingPE') or info.get('trailingPE'))
-    peg = safe_num(info.get('pegRatio'))
-    ev_to_ebitda = safe_num(info.get('enterpriseToEbitda') or info.get('enterpriseToEbitda'))
-    dividend_yield = safe_num(info.get('dividendYield') or info.get('trailingAnnualDividendYield'))
-    payout_ratio = safe_num(info.get('payoutRatio'))
+    # 2) If info seems empty, try Yahoo quoteSummary JSON as fallback
+    yahoo_q = {}
+    if not info:
+        try:
+            import requests
+            qs_url = (
+                f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}"
+                "?modules=financialData,defaultKeyStatistics,price,summaryDetail"
+            )
+            r = requests.get(qs_url, timeout=10)
+            j = r.json()
+            if j and isinstance(j, dict):
+                res = j.get("quoteSummary", {}).get("result")
+                if res and len(res) > 0:
+                    yahoo_q = res[0]
+                    source = "yahoo_json"
+        except Exception:
+            yahoo_q = {}
 
-    # financial statements
+    # financial statements (annual/quarterly) from yfinance
     try:
         income = t.financials
         balance = t.balance_sheet
@@ -159,66 +186,90 @@ def compute_metrics(ticker: str = 'AAPL') -> Dict[str, Any]:
     except Exception:
         income = balance = cashflow = pd.DataFrame()
 
-    # Price / Free Cash Flow
-    free_cf = safe_num(info.get('freeCashflow') or info.get('freeCashFlow') or (None))
+    # helper to read raw value from yahoo quoteSummary module
+    def _raw(q, *path):
+        try:
+            cur = q
+            for p in path:
+                if cur is None:
+                    return None
+                cur = cur.get(p)
+            if isinstance(cur, dict):
+                return safe_num(cur.get("raw") if "raw" in cur else cur)
+            return safe_num(cur)
+        except Exception:
+            return None
+
+    # gather values (prefer info, then yahoo_q)
+    market_cap = safe_num(info.get("marketCap") or _raw(yahoo_q, "price", "marketCap"))
+    trailing_pe = safe_num(info.get("trailingPE") or _raw(yahoo_q, "summaryDetail", "trailingPE") or _raw(yahoo_q, "defaultKeyStatistics", "trailingPE"))
+    peg = safe_num(info.get("pegRatio") or _raw(yahoo_q, "defaultKeyStatistics", "pegRatio") or _raw(yahoo_q, "financialData", "pegRatio"))
+    ev_to_ebitda = safe_num(info.get("enterpriseToEbitda") or _raw(yahoo_q, "financialData", "enterpriseToEbitda"))
+    dividend_yield = safe_num(info.get("dividendYield") or _raw(yahoo_q, "summaryDetail", "dividendYield") or _raw(yahoo_q, "financialData", "dividendYield"))
+    payout_ratio = safe_num(info.get("payoutRatio") or _raw(yahoo_q, "financialData", "payoutRatio"))
+    free_cf = safe_num(info.get("freeCashflow") or _raw(yahoo_q, "financialData", "freeCashflow"))
+
+    # Price/FCF
     price_to_fcf = None
     if market_cap and free_cf and free_cf != 0:
         price_to_fcf = market_cap / free_cf
 
-    # Debt and liquidity
-    total_debt = safe_num(info.get('totalDebt'))
-    total_cash = safe_num(info.get('totalCash') or info.get('cash'))
-    ebitda = safe_num(info.get('ebitda'))
+    # debt and cash
+    total_debt = safe_num(info.get("totalDebt") or _raw(yahoo_q, "financialData", "totalDebt"))
+    total_cash = safe_num(info.get("totalCash") or _raw(yahoo_q, "financialData", "totalCash"))
+    ebitda = safe_num(info.get("ebitda") or _raw(yahoo_q, "financialData", "ebitda"))
+
     net_debt_to_ebitda = None
     if total_debt is not None and total_cash is not None and ebitda:
-        net_debt = total_debt - total_cash
-        if ebitda != 0:
-            net_debt_to_ebitda = net_debt / ebitda
+        try:
+            net_debt = total_debt - total_cash
+            if ebitda != 0:
+                net_debt_to_ebitda = net_debt / ebitda
+        except Exception:
+            net_debt_to_ebitda = None
 
     # margins and returns
-    operating_margin = safe_num(info.get('operatingMargins'))
-    net_profit_margin = safe_num(info.get('profitMargins'))
-    roe = safe_num(info.get('returnOnEquity'))
-    roic = safe_num(info.get('returnOnInvestment') or info.get('returnOnInvestedCapital') or info.get('returnOnAssets'))
+    operating_margin = safe_num(info.get("operatingMargins") or _raw(yahoo_q, "financialData", "operatingMargins"))
+    net_profit_margin = safe_num(info.get("profitMargins") or _raw(yahoo_q, "financialData", "profitMargins"))
+    roe = safe_num(info.get("returnOnEquity") or _raw(yahoo_q, "financialData", "returnOnEquity"))
+    roic = safe_num(info.get("returnOnInvestment") or info.get("returnOnInvestedCapital") or _raw(yahoo_q, "financialData", "returnOnEquity") or info.get("returnOnAssets"))
 
-    # ratios
-    debt_to_equity = safe_num(info.get('debtToEquity'))
-    current_ratio = safe_num(info.get('currentRatio'))
-    quick_ratio = safe_num(info.get('quickRatio'))
+    # liquidity
+    debt_to_equity = safe_num(info.get("debtToEquity") or _raw(yahoo_q, "financialData", "debtToEquity"))
+    current_ratio = safe_num(info.get("currentRatio") or _raw(yahoo_q, "financialData", "currentRatio"))
+    quick_ratio = safe_num(info.get("quickRatio") or _raw(yahoo_q, "financialData", "quickRatio"))
 
-    # Revenue CAGR 5yr
+    # revenue cagr using income statement
     revs = df_to_revs(income)
     revenue_cagr_5yr = None
     try:
-        if len(revs) >= 6:
-            # revs are in descending date order from yfinance; reverse to chronological
-            last5 = revs[0:5]
-            first = last5[-1]
-            last = last5[0]
+        if len(revs) >= 5:
+            # revs from yfinance are in descending order (newest first)
+            last5 = revs[:5]
+            newest = last5[0]
+            oldest = last5[-1]
             years = len(last5) - 1
-            if first and last and first > 0:
-                revenue_cagr_5yr = (last / first) ** (1.0 / years) - 1.0
+            if oldest and newest and oldest > 0:
+                revenue_cagr_5yr = (newest / oldest) ** (1.0 / years) - 1.0
     except Exception:
         revenue_cagr_5yr = None
 
-    # Total Shareholder Yield (dividend + buyback)
+    # buyback yield from cashflow statement (repurchases)
     buyback_yield = None
     try:
-        if isinstance(cashflow, pd.DataFrame) and not cashflow.empty:
-            # pick latest column
+        if isinstance(cashflow, pd.DataFrame) and not cashflow.empty and market_cap:
             latest_col = cashflow.columns[0]
             repurchase = None
-            for key in ('Repurchase Of Capital Stock', 'Repurchase Of Common Stock', 'Repurchase of Common Stock'):
+            for key in ("Repurchase Of Capital Stock", "Repurchase Of Common Stock", "Repurchase of Common Stock"):
                 if key in cashflow.index:
                     repurchase = cashflow.at[key, latest_col]
                     break
             if repurchase is None:
-                # try common names
                 for idx in cashflow.index:
-                    if 'repurch' in str(idx).lower():
+                    if "repurch" in str(idx).lower():
                         repurchase = cashflow.at[idx, latest_col]
                         break
-            if repurchase is not None and market_cap:
+            if repurchase is not None:
                 buyback_yield = (-float(repurchase)) / market_cap
     except Exception:
         buyback_yield = None
@@ -229,36 +280,37 @@ def compute_metrics(ticker: str = 'AAPL') -> Dict[str, Any]:
     else:
         total_shareholder_yield = buyback_yield
 
-    # Payout ratio fallback
+    # payout ratio fallback
     if payout_ratio is None:
         try:
-            div_rate = safe_num(info.get('dividendRate'))
-            eps = safe_num(info.get('trailingEps') or info.get('epsTrailingTwelveMonths'))
+            div_rate = safe_num(info.get("dividendRate") or _raw(yahoo_q, "summaryDetail", "dividendRate"))
+            eps = safe_num(info.get("trailingEps") or info.get("epsTrailingTwelveMonths") or _raw(yahoo_q, "defaultKeyStatistics", "trailingEps"))
             if div_rate is not None and eps:
                 payout_ratio = div_rate / eps
         except Exception:
             payout_ratio = None
 
     metrics = {
-        'ticker': ticker,
-        'marketCap': market_cap,
-        'trailingPE': trailing_pe,
-        'pegRatio': peg,
-        'ev_to_ebitda': ev_to_ebitda,
-        'price_to_free_cash_flow': price_to_fcf,
-        'dividendYield': dividend_yield,
-        'total_shareholder_yield': total_shareholder_yield,
-        'buyback_yield': buyback_yield,
-        'payout_ratio': payout_ratio,
-        'roe': roe,
-        'roic': roic,
-        'operating_margin': operating_margin,
-        'net_profit_margin': net_profit_margin,
-        'debt_to_equity': debt_to_equity,
-        'net_debt_to_ebitda': net_debt_to_ebitda,
-        'current_ratio': current_ratio,
-        'quick_ratio': quick_ratio,
-        'revenue_cagr_5yr': revenue_cagr_5yr,
+        "ticker": ticker,
+        "marketCap": market_cap,
+        "trailingPE": trailing_pe,
+        "pegRatio": peg,
+        "ev_to_ebitda": ev_to_ebitda,
+        "price_to_free_cash_flow": price_to_fcf,
+        "dividendYield": dividend_yield,
+        "total_shareholder_yield": total_shareholder_yield,
+        "buyback_yield": buyback_yield,
+        "payout_ratio": payout_ratio,
+        "roe": roe,
+        "roic": roic,
+        "operating_margin": operating_margin,
+        "net_profit_margin": net_profit_margin,
+        "debt_to_equity": debt_to_equity,
+        "net_debt_to_ebitda": net_debt_to_ebitda,
+        "current_ratio": current_ratio,
+        "quick_ratio": quick_ratio,
+        "revenue_cagr_5yr": revenue_cagr_5yr,
+        "_source": source,
     }
 
     return metrics

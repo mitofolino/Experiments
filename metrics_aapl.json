@@ -3,7 +3,7 @@
   "marketCap": 4221733699584.0,
   "trailingPE": 34.841213,
   "pegRatio": 2.52,
-  "ev_to_ebitda": 26.498,
+  "ev_to_ebitda": 26.491,
   "price_to_free_cash_flow": 41.761821445215666,
   "dividendYield": 0.38,
   "total_shareholder_yield": 0.40148667027693824,
@@ -17,5 +17,6 @@
   "net_debt_to_ebitda": 0.10129017754727493,
   "current_ratio": 1.07,
   "quick_ratio": 0.906,
-  "revenue_cagr_5yr": null
+  "revenue_cagr_5yr": null,
+  "_source": "yfinance"
 }
