@@ -74,30 +74,32 @@ def get_ticker(ticker="AAPL"):
         "info": info,
     }
 
-    # extract basic key metrics from info
-    data["key_metrics"] = {
-        "marketCap": info.get("marketCap"),
-        "trailingPE": info.get("trailingPE"),
-        "pegRatio": info.get("pegRatio"),
-        "ev_to_ebitda": info.get("enterpriseToEbitda"),
-        "priceToSalesTrailing12Months": info.get("priceToSalesTrailing12Months"),
-        "priceToBook": info.get("priceToBook"),
-        "profitMargins": info.get("profitMargins"),
-        "operatingMargins": info.get("operatingMargins"),
-        "returnOnAssets": info.get("returnOnAssets"),
-        "returnOnEquity": info.get("returnOnEquity"),
-        "totalRevenue": info.get("totalRevenue"),
-        "netIncomeToCommon": info.get("netIncomeToCommon"),
-        "freeCashflow": info.get("freeCashflow"),
-        "totalCash": info.get("totalCash"),
-        "debtToEquity": info.get("debtToEquity"),
-        "dividendRate": info.get("dividendRate"),
-        "dividendYield": info.get("dividendYield"),
-        "currentRatio": info.get("currentRatio"),
-        "quickRatio": info.get("quickRatio"),
-        "ebitda": info.get("ebitda"),
-        "totalDebt": info.get("totalDebt"),
-    }
+    # pick common key metrics (safe .get)
+    keys = [
+        "marketCap",
+        "fiftyTwoWeekHigh",
+        "fiftyTwoWeekLow",
+        "trailingPE",
+        "trailingEps",
+        "pegRatio",
+        "priceToSalesTrailing12Months",
+        "priceToBook",
+        "enterpriseValue",
+        "enterpriseToRevenue",
+        "enterpriseToEbitda",
+        "profitMargins",
+        "returnOnAssets",
+        "returnOnEquity",
+        "totalRevenue",
+        "netIncomeToCommon",
+        "freeCashflow",
+        "totalCash",
+        "debtToEquity",
+        "dividendRate",
+        "dividendYield",
+    ]
+    metrics = {k: info.get(k) for k in keys}
+    data["key_metrics"] = metrics
 
     # financial statements (annual and quarterly)
     try:
@@ -118,106 +120,6 @@ def get_ticker(ticker="AAPL"):
         "balance_quarterly": df_to_list(q_bal, max_cols=8),
         "cashflow_quarterly": df_to_list(q_cash, max_cols=8),
     }
-
-    data["financials"] = {
-        "income_annual": df_to_list(income, max_cols=5),
-        "balance_annual": df_to_list(bal, max_cols=5),
-        "cashflow_annual": df_to_list(cash, max_cols=5),
-        "income_quarterly": df_to_list(q_income, max_cols=8),
-        "balance_quarterly": df_to_list(q_bal, max_cols=8),
-        "cashflow_quarterly": df_to_list(q_cash, max_cols=8),
-    }
-
-    # compute derived metrics where possible
-    try:
-        km = data.get("key_metrics", {})
-        market_cap = km.get("marketCap")
-        free_cashflow = km.get("freeCashflow") or km.get("freeCashflow")
-        # price-to-free-cash-flow (Market Cap / Free Cash Flow)
-        price_to_free_cash_flow = None
-        try:
-            if market_cap and free_cashflow:
-                price_to_free_cash_flow = market_cap / free_cashflow
-        except Exception:
-            price_to_free_cash_flow = None
-        km["price_to_free_cash_flow"] = price_to_free_cash_flow
-
-        # Net debt to EBITDA
-        total_debt = km.get("totalDebt") or info.get("totalDebt")
-        total_cash = km.get("totalCash") or info.get("totalCash")
-        ebitda = km.get("ebitda") or info.get("ebitda")
-        net_debt_to_ebitda = None
-        try:
-            if total_debt is not None and total_cash is not None and ebitda:
-                net_debt = total_debt - total_cash
-                if ebitda != 0:
-                    net_debt_to_ebitda = net_debt / ebitda
-        except Exception:
-            net_debt_to_ebitda = None
-        km["net_debt_to_ebitda"] = net_debt_to_ebitda
-
-        # Revenue CAGR (5yr) from annual income statements
-        rev_cagr_5yr = None
-        try:
-            ann = data.get("financials", {}).get("income_annual", [])
-            revs = []
-            for entry in ann:
-                for key in ("Total Revenue", "TotalRevenue", "totalRevenue"):
-                    if key in entry and entry[key] is not None:
-                        revs.append(entry[key])
-                        break
-            if len(revs) >= 5:
-                window = list(reversed(revs[:5]))
-                start = window[0]
-                end = window[-1]
-                if start and end and start > 0:
-                    years = len(window) - 1
-                    rev_cagr_5yr = (end / start) ** (1.0 / years) - 1.0
-        except Exception:
-            rev_cagr_5yr = None
-        km["revenue_cagr_5yr"] = rev_cagr_5yr
-
-        # Total Shareholder Yield = Dividend Yield + Buyback Yield (using latest annual repurchases)
-        dividend_yield = km.get("dividendYield") or info.get("dividendYield") or info.get("trailingAnnualDividendYield")
-        buyback_yield = None
-        try:
-            cf_ann = data.get("financials", {}).get("cashflow_annual", [])
-            if cf_ann:
-                repurchase = cf_ann[0].get("Repurchase Of Capital Stock")
-                if repurchase is None:
-                    repurchase = cf_ann[0].get("Repurchase Of Common Stock") or cf_ann[0].get("Repurchase Of Capital Stock, Common Stock")
-                if repurchase is not None and market_cap:
-                    buyback_yield = (-repurchase) / market_cap
-        except Exception:
-            buyback_yield = None
-        km["buyback_yield"] = buyback_yield
-        if dividend_yield is not None:
-            try:
-                km["total_shareholder_yield"] = dividend_yield + (buyback_yield or 0)
-            except Exception:
-                km["total_shareholder_yield"] = None
-        else:
-            km["total_shareholder_yield"] = buyback_yield
-
-        # Payout ratio (fallback to dividend / EPS)
-        payout_ratio = info.get("payoutRatio")
-        if payout_ratio is None:
-            div_rate = info.get("dividendRate")
-            eps = info.get("trailingEps")
-            try:
-                if div_rate is not None and eps:
-                    payout_ratio = div_rate / eps
-            except Exception:
-                payout_ratio = None
-        km["payout_ratio"] = payout_ratio
-
-        # ROIC fallback
-        roic = info.get("returnOnInvestment") or info.get("returnOnInvestedCapital") or info.get("returnOnAssets")
-        km["roic"] = roic
-
-        data["key_metrics"] = km
-    except Exception:
-        pass
 
     # attempt to fetch Yahoo's quoteSummary JSON for additional structured fields
     try:
@@ -247,3 +149,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
