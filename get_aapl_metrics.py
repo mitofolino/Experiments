@@ -202,7 +202,27 @@ def compute_metrics(ticker: str = 'AAPL') -> Dict[str, Any]:
 
     # gather values (prefer info, then yahoo_q)
     market_cap = safe_num(info.get("marketCap") or _raw(yahoo_q, "price", "marketCap"))
+    # Price and EPS values for P/E fallbacks
+    price = safe_num(info.get("currentPrice") or info.get("regularMarketPrice") or _raw(yahoo_q, "price", "regularMarketPrice") or _raw(yahoo_q, "price", "regularMarketPreviousClose"))
+    ttm_eps = safe_num(info.get("trailingEps") or info.get("epsTrailingTwelveMonths") or _raw(yahoo_q, "defaultKeyStatistics", "trailingEps") or _raw(yahoo_q, "financialData", "trailingEps"))
+    forward_eps = safe_num(info.get("forwardEps") or _raw(yahoo_q, "financialData", "forwardEps"))
+
     trailing_pe = safe_num(info.get("trailingPE") or _raw(yahoo_q, "summaryDetail", "trailingPE") or _raw(yahoo_q, "defaultKeyStatistics", "trailingPE"))
+    # fallback: compute trailing P/E from price and trailing EPS when available
+    if trailing_pe is None and price and ttm_eps and ttm_eps != 0:
+        try:
+            trailing_pe = float(price) / float(ttm_eps)
+        except Exception:
+            trailing_pe = None
+
+    forward_pe = safe_num(info.get("forwardPE") or _raw(yahoo_q, "financialData", "forwardPE"))
+    # fallback: compute forward P/E from price and forward EPS
+    if forward_pe is None and price and forward_eps and forward_eps != 0:
+        try:
+            forward_pe = float(price) / float(forward_eps)
+        except Exception:
+            forward_pe = None
+
     peg = safe_num(info.get("pegRatio") or _raw(yahoo_q, "defaultKeyStatistics", "pegRatio") or _raw(yahoo_q, "financialData", "pegRatio"))
     ev_to_ebitda = safe_num(info.get("enterpriseToEbitda") or _raw(yahoo_q, "financialData", "enterpriseToEbitda"))
     dividend_yield = safe_num(info.get("dividendYield") or _raw(yahoo_q, "summaryDetail", "dividendYield") or _raw(yahoo_q, "financialData", "dividendYield"))
@@ -294,6 +314,7 @@ def compute_metrics(ticker: str = 'AAPL') -> Dict[str, Any]:
         "ticker": ticker,
         "marketCap": market_cap,
         "trailingPE": trailing_pe,
+        "forwardPE": forward_pe,
         "pegRatio": peg,
         "ev_to_ebitda": ev_to_ebitda,
         "price_to_free_cash_flow": price_to_fcf,
@@ -310,6 +331,9 @@ def compute_metrics(ticker: str = 'AAPL') -> Dict[str, Any]:
         "current_ratio": current_ratio,
         "quick_ratio": quick_ratio,
         "revenue_cagr_5yr": revenue_cagr_5yr,
+        # Expose EPS fields used for P/E calculations
+        "ttmEPS": ttm_eps,
+        "forwardEPS": forward_eps,
         "_source": source,
     }
 
