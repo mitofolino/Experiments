@@ -91,9 +91,17 @@ async def get_metrics(ticker: str, save: Optional[bool] = False, use_cache: Opti
     # Not cached -> compute
     try:
         metrics = compute_metrics(ticker)
+        # If compute_metrics returns no meaningful data, treat as not found
+        if not metrics or not isinstance(metrics, dict) or all(v is None for v in metrics.values()):
+            logger.info("No metrics found for %s", ticker)
+            raise HTTPException(status_code=404, detail=f"No metrics found for ticker {ticker}")
+    except HTTPException:
+        # propagate expected HTTP errors
+        raise
     except Exception as e:
         logger.exception("Error computing metrics for %s", ticker)
-        raise HTTPException(status_code=500, detail=str(e))
+        # Return a user-friendly error without exposing internals
+        raise HTTPException(status_code=422, detail=f"Failed to compute metrics for {ticker}")
 
     # cache the fresh result
     try:
@@ -137,9 +145,14 @@ async def post_metrics(req: TickerRequest, save: Optional[bool] = False,
 
     try:
         metrics = compute_metrics(ticker)
+        if not metrics or not isinstance(metrics, dict) or all(v is None for v in metrics.values()):
+            logger.info("No metrics found for %s (POST)", ticker)
+            raise HTTPException(status_code=404, detail=f"No metrics found for ticker {ticker}")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Error computing metrics for %s", ticker)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=422, detail=f"Failed to compute metrics for {ticker}")
 
     # update cache with fresh result
     try:
