@@ -12,7 +12,8 @@ Run (from Experiments, with venv activated):
 Docs: http://127.0.0.1:8000/docs
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import json
@@ -37,6 +38,26 @@ class TickerRequest(BaseModel):
 app = FastAPI(title="Ticker Metrics API", version="0.2")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("webhook_api")
+
+# Standard JSON error format for webhook clients (Make.com friendly)
+def _error_payload(code: int, message: str, details: dict = None):
+    payload = {"status": "error", "code": code, "message": message}
+    if details:
+        payload["details"] = details
+    return payload
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    # preserve status and message in a Make.com-friendly structure
+    content = _error_payload(exc.status_code, str(exc.detail))
+    return JSONResponse(status_code=exc.status_code, content=content)
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled exception: %s", exc)
+    content = _error_payload(500, "Internal server error")
+    return JSONResponse(status_code=500, content=content)
+
 
 # Simple in-memory cache: { ticker_upper: {"metrics": {...}, "ts": <epoch>} }
 CACHE: Dict[str, Dict[str, Any]] = {}
